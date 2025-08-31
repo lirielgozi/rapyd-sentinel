@@ -1,0 +1,1 @@
+{"statusCode": 200, "body": "{\"message\": \"Lambda is working\", \"environment\": {\"backend_cluster\": \"eks-backend\", \"gateway_cluster\": \"eks-gateway\", \"backend_endpoint\": \"https://22D1AA646CE5073CB2ABAA2C07FA6D1F.gr7.us-ea...\", \"gateway_endpoint\": \"https://2E971534931A85A677BB7A8954361679.gr7.us-ea...\", \"region\": \"us-east-1\"}}"}

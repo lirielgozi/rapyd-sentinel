@@ -1,0 +1,11 @@
+{
+  "name": "sentinel-backend",
+  "version": "1.0.0",
+  "description": "Simple backend service for Rapyd Sentinel",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js"
+  },
+  "author": "",
+  "license": "MIT"
+}
