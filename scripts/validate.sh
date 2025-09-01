@@ -75,7 +75,7 @@ test_connectivity() {
     echo -e "${YELLOW}Testing connectivity...${NC}"
     
     # Get LoadBalancer URL
-    kubectl config use-context arn:aws:eks:us-east-1:$(aws sts get-caller-identity --query Account --output text):cluster/eks-gateway
+    kubectl config use-context arn:aws:eks:us-west-2:$(aws sts get-caller-identity --query Account --output text):cluster/eks-gateway
     LB_URL=$(kubectl get svc gateway-service -n default -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
     
     if [ -z "$LB_URL" ]; then
@@ -105,10 +105,10 @@ check_security() {
     echo -e "${YELLOW}Checking security configurations...${NC}"
     
     # Check NetworkPolicies
-    kubectl config use-context arn:aws:eks:us-east-1:$(aws sts get-caller-identity --query Account --output text):cluster/eks-backend
+    kubectl config use-context arn:aws:eks:us-west-2:$(aws sts get-caller-identity --query Account --output text):cluster/eks-backend
     kubectl get networkpolicies -n default
     
-    kubectl config use-context arn:aws:eks:us-east-1:$(aws sts get-caller-identity --query Account --output text):cluster/eks-gateway
+    kubectl config use-context arn:aws:eks:us-west-2:$(aws sts get-caller-identity --query Account --output text):cluster/eks-gateway
     kubectl get networkpolicies -n default
     
     # Check Security Groups

@@ -68,7 +68,7 @@ wait_for_lambda() {
     for i in {1..30}; do
         STATE=$(aws lambda get-function \
             --function-name $LAMBDA_NAME \
-            --region us-east-1 \
+            --region us-west-2 \
             --query 'Configuration.State' \
             --output text 2>/dev/null || echo "")
         
@@ -103,20 +103,20 @@ configure_aws_auth() {
     # echo "Configuring Backend cluster aws-auth..."
     # 
     # # Check current public access state
-    # CURRENT_PUBLIC_ACCESS=$(aws eks describe-cluster --name eks-backend --region us-east-1 --query 'cluster.resourcesVpcConfig.endpointPublicAccess' --output text)
+    # CURRENT_PUBLIC_ACCESS=$(aws eks describe-cluster --name eks-backend --region us-west-2 --query 'cluster.resourcesVpcConfig.endpointPublicAccess' --output text)
     # 
     # if [ "$CURRENT_PUBLIC_ACCESS" = "false" ]; then
     #     # Enable public access temporarily
     #     echo "Enabling public access for backend cluster temporarily..."
     #     aws eks update-cluster-config \
     #         --name eks-backend \
-    #         --region us-east-1 \
+    #         --region us-west-2 \
     #         --resources-vpc-config endpointPublicAccess=true,endpointPrivateAccess=true \
     #         --output json > /dev/null
     #     
     #     # Wait for update to complete
     #     echo "Waiting for backend cluster update to complete..."
-    #     aws eks wait cluster-active --name eks-backend --region us-east-1
+    #     aws eks wait cluster-active --name eks-backend --region us-west-2
     # else
     #     echo "Backend cluster public access is already enabled"
     # fi
@@ -137,7 +137,7 @@ deploy_services() {
     aws lambda invoke \
         --function-name $LAMBDA_NAME \
         --payload $(echo '{"action": "deploy", "target": "both"}' | base64) \
-        --region us-east-1 \
+        --region us-west-2 \
         /tmp/deploy-result.json \
         --cli-read-timeout 300
     
@@ -163,7 +163,7 @@ verify_deployment() {
     aws lambda invoke \
         --function-name $LAMBDA_NAME \
         --payload $(echo '{"action": "status", "target": "both"}' | base64) \
-        --region us-east-1 \
+        --region us-west-2 \
         /tmp/status-result.json \
         --cli-read-timeout 60 > /dev/null 2>&1
 
@@ -237,7 +237,7 @@ verify_deployment() {
     else
         echo -e "${RED}Could not determine Gateway URL${NC}"
         echo "Check deployment status manually with:"
-        echo "  kubectl get svc -n default --context arn:aws:eks:us-east-1:\$(aws sts get-caller-identity --query Account --output text):cluster/eks-gateway"
+        echo "  kubectl get svc -n default --context arn:aws:eks:us-west-2:\$(aws sts get-caller-identity --query Account --output text):cluster/eks-gateway"
         return 1
     fi
 
@@ -267,16 +267,16 @@ display_access_info() {
     echo "Check deployment status:"
     echo "  aws lambda invoke --function-name rapyd-sentinel-eks-deployer \\"
     echo "    --payload \$(echo '{\"action\": \"status\", \"target\": \"both\"}' | base64) \\"
-    echo "    /tmp/status.json --region us-east-1"
+    echo "    /tmp/status.json --region us-west-2"
     echo "  cat /tmp/status.json | jq -r '.body'"
     echo ""
     echo "Redeploy services:"
     echo "  aws lambda invoke --function-name rapyd-sentinel-eks-deployer \\"
     echo "    --payload \$(echo '{\"action\": \"deploy\", \"target\": \"both\"}' | base64) \\"
-    echo "    /tmp/deploy.json --region us-east-1"
+    echo "    /tmp/deploy.json --region us-west-2"
     echo ""
     echo "Access Gateway cluster directly:"
-    echo "  kubectl get all -n default --context arn:aws:eks:us-east-1:\$(aws sts get-caller-identity --query Account --output text):cluster/eks-gateway"
+    echo "  kubectl get all -n default --context arn:aws:eks:us-west-2:\$(aws sts get-caller-identity --query Account --output text):cluster/eks-gateway"
     echo ""
     echo "View Lambda logs:"
     echo "  aws logs tail /aws/lambda/rapyd-sentinel-eks-deployer --follow"

@@ -19,8 +19,8 @@ echo ""
 echo -e "${YELLOW}Checking infrastructure...${NC}"
 
 # Check VPCs
-VPC_GATEWAY=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=vpc-gateway" --region us-east-1 --query "Vpcs[0].VpcId" --output text 2>/dev/null || echo "")
-VPC_BACKEND=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=vpc-backend" --region us-east-1 --query "Vpcs[0].VpcId" --output text 2>/dev/null || echo "")
+VPC_GATEWAY=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=vpc-gateway" --region us-west-2 --query "Vpcs[0].VpcId" --output text 2>/dev/null || echo "")
+VPC_BACKEND=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=vpc-backend" --region us-west-2 --query "Vpcs[0].VpcId" --output text 2>/dev/null || echo "")
 
 if [ -n "$VPC_GATEWAY" ] && [ "$VPC_GATEWAY" != "None" ]; then
     echo -e "  ${GREEN}✓ Gateway VPC: $VPC_GATEWAY${NC}"
@@ -38,8 +38,8 @@ fi
 echo ""
 echo -e "${YELLOW}Checking EKS clusters...${NC}"
 
-GATEWAY_CLUSTER=$(aws eks describe-cluster --name eks-gateway --region us-east-1 --query "cluster.status" --output text 2>/dev/null || echo "")
-BACKEND_CLUSTER=$(aws eks describe-cluster --name eks-backend --region us-east-1 --query "cluster.status" --output text 2>/dev/null || echo "")
+GATEWAY_CLUSTER=$(aws eks describe-cluster --name eks-gateway --region us-west-2 --query "cluster.status" --output text 2>/dev/null || echo "")
+BACKEND_CLUSTER=$(aws eks describe-cluster --name eks-backend --region us-west-2 --query "cluster.status" --output text 2>/dev/null || echo "")
 
 if [ "$GATEWAY_CLUSTER" = "ACTIVE" ]; then
     echo -e "  ${GREEN}✓ Gateway Cluster: ACTIVE${NC}"
@@ -57,7 +57,7 @@ fi
 echo ""
 echo -e "${YELLOW}Checking Lambda function...${NC}"
 
-LAMBDA_STATE=$(aws lambda get-function --function-name rapyd-sentinel-eks-deployer --region us-east-1 --query "Configuration.State" --output text 2>/dev/null || echo "")
+LAMBDA_STATE=$(aws lambda get-function --function-name rapyd-sentinel-eks-deployer --region us-west-2 --query "Configuration.State" --output text 2>/dev/null || echo "")
 
 if [ "$LAMBDA_STATE" = "Active" ]; then
     echo -e "  ${GREEN}✓ Lambda Deployer: Active${NC}"
@@ -73,7 +73,7 @@ if [ "$LAMBDA_STATE" = "Active" ]; then
     aws lambda invoke \
         --function-name rapyd-sentinel-eks-deployer \
         --payload $(echo '{"action": "status", "target": "both"}' | base64) \
-        --region us-east-1 \
+        --region us-west-2 \
         /tmp/status-check.json \
         --cli-read-timeout 60 > /dev/null 2>&1
     

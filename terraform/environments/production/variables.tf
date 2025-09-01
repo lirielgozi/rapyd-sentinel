@@ -32,7 +32,7 @@ variable "backend_vpc_cidr" {
 variable "azs" {
   description = "Availability zones to use"
   type        = list(string)
-  default     = ["us-east-1a", "us-east-1b"]
+  default     = ["us-west-2a", "us-west-2b"]
 }
 
 # EKS Configuration

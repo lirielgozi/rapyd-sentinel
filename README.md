@@ -71,7 +71,7 @@ aws sso login
 After deployment completes, you'll see the Gateway URL. Test it:
 ```bash
 # The deploy-all.sh script will output the Gateway URL
-# Example: http://a03ff947d357c4a0e93affa272074887-2140612237.us-east-1.elb.amazonaws.com/
+# Example: http://a03ff947d357c4a0e93affa272074887-2140612237.us-west-2.elb.amazonaws.com/
 
 # Test the endpoint (Gateway proxies to Backend)
 curl http://<GATEWAY_URL>/
@@ -87,12 +87,12 @@ curl http://<GATEWAY_URL>/health
 # Check deployment status
 aws lambda invoke --function-name rapyd-sentinel-eks-deployer \
   --payload $(echo '{"action": "status", "target": "both"}' | base64) \
-  /tmp/status.json --region us-east-1
+  /tmp/status.json --region us-west-2
 
 # Redeploy services
 aws lambda invoke --function-name rapyd-sentinel-eks-deployer \
   --payload $(echo '{"action": "deploy", "target": "both"}' | base64) \
-  /tmp/deploy.json --region us-east-1
+  /tmp/deploy.json --region us-west-2
 ```
 
 ## Project Structure
@@ -227,26 +227,26 @@ for i in {1..5}; do curl -s $GATEWAY_URL; echo; done
 # Check deployment status
 aws lambda invoke --function-name rapyd-sentinel-eks-deployer \
   --payload $(echo '{"action": "status", "target": "both"}' | base64) \
-  /tmp/status.json --region us-east-1
+  /tmp/status.json --region us-west-2
 cat /tmp/status.json | jq .
 
 # Get logs from pods
 aws lambda invoke --function-name rapyd-sentinel-eks-deployer \
   --payload $(echo '{"action": "logs", "target": "both"}' | base64) \
-  /tmp/logs.json --region us-east-1
+  /tmp/logs.json --region us-west-2
 cat /tmp/logs.json | jq .
 ```
 
 ### Verify Infrastructure
 ```bash
 # Check VPC peering
-aws ec2 describe-vpc-peering-connections --region us-east-1
+aws ec2 describe-vpc-peering-connections --region us-west-2
 
 # Check EKS clusters
-aws eks list-clusters --region us-east-1
+aws eks list-clusters --region us-west-2
 
 # Check Lambda function
-aws lambda get-function --function-name rapyd-sentinel-eks-deployer --region us-east-1
+aws lambda get-function --function-name rapyd-sentinel-eks-deployer --region us-west-2
 ```
 
 ## Cleanup
@@ -274,7 +274,7 @@ terraform destroy -auto-approve
   ```bash
   aws lambda invoke --function-name rapyd-sentinel-eks-deployer \
     --payload $(echo '{"action": "deploy", "target": "backend"}' | base64) \
-    /tmp/deploy.json --region us-east-1
+    /tmp/deploy.json --region us-west-2
   ```
 
 #### Cannot see pods in AWS Console
@@ -319,29 +319,29 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
+          aws-region: us-west-2
       
       - name: Login to Amazon ECR
         run: |
-          aws ecr get-login-password --region us-east-1 | \
+          aws ecr get-login-password --region us-west-2 | \
           docker login --username AWS --password-stdin \
-          ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+          ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-west-2.amazonaws.com
       
       - name: Build and push Backend image
         run: |
           docker build -t rapyd-sentinel/backend kubernetes/backend/
           docker tag rapyd-sentinel/backend:latest \
-            ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/rapyd-sentinel/backend:${{ github.sha }}
-          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/rapyd-sentinel/backend:${{ github.sha }}
-          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/rapyd-sentinel/backend:latest
+            ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-west-2.amazonaws.com/rapyd-sentinel/backend:${{ github.sha }}
+          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-west-2.amazonaws.com/rapyd-sentinel/backend:${{ github.sha }}
+          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-west-2.amazonaws.com/rapyd-sentinel/backend:latest
       
       - name: Build and push Gateway image  
         run: |
           docker build -t rapyd-sentinel/gateway kubernetes/gateway/
           docker tag rapyd-sentinel/gateway:latest \
-            ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/rapyd-sentinel/gateway:${{ github.sha }}
-          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/rapyd-sentinel/gateway:${{ github.sha }}
-          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com/rapyd-sentinel/gateway:latest
+            ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-west-2.amazonaws.com/rapyd-sentinel/gateway:${{ github.sha }}
+          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-west-2.amazonaws.com/rapyd-sentinel/gateway:${{ github.sha }}
+          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-west-2.amazonaws.com/rapyd-sentinel/gateway:latest
       
       - name: Deploy via Lambda
         run: |
