@@ -121,30 +121,51 @@ destroy_kubernetes() {
     echo "Checking for orphaned security groups..."
     # Wait a bit for ENIs to detach after LB deletion
     sleep 10
-    for sg_id in $(aws ec2 describe-security-groups --region us-east-1 --query "SecurityGroups[?contains(GroupName, 'k8s-elb') || contains(GroupName, 'k8s-traffic') || contains(Tags[?Key=='kubernetes.io/cluster/eks-gateway'].Value, 'owned') || contains(Tags[?Key=='kubernetes.io/cluster/eks-backend'].Value, 'owned')].GroupId" --output text 2>/dev/null); do
-        sg_name=$(aws ec2 describe-security-groups --group-ids "$sg_id" --region us-east-1 --query "SecurityGroups[0].GroupName" --output text 2>/dev/null)
-        echo "Deleting orphaned security group: $sg_name ($sg_id)"
-        # First, remove all ingress and egress rules to avoid dependency issues
-        aws ec2 revoke-security-group-ingress --group-id "$sg_id" --region us-east-1 --source-group "$sg_id" --protocol all 2>/dev/null || true
-        aws ec2 revoke-security-group-egress --group-id "$sg_id" --region us-east-1 --source-group "$sg_id" --protocol all 2>/dev/null || true
-        # Then delete the security group
-        aws ec2 delete-security-group --group-id "$sg_id" --region us-east-1 || true
+
+    # More comprehensive k8s security group cleanup
+    # First, find all VPCs with our project tag
+    for vpc_id in $(aws ec2 describe-vpcs --filters "Name=tag:Project,Values=RapydSentinel" --region us-east-1 --query "Vpcs[].VpcId" --output text 2>/dev/null); do
+        echo "Cleaning security groups in VPC: $vpc_id"
+
+        # Find all k8s-related security groups in this VPC
+        for sg_id in $(aws ec2 describe-security-groups --filters "Name=vpc-id,Values=$vpc_id" --region us-east-1 --query "SecurityGroups[?contains(GroupName, 'k8s-elb') || contains(GroupName, 'k8s-traffic') || contains(Tags[?Key=='kubernetes.io/cluster/eks-gateway'].Value, 'owned') || contains(Tags[?Key=='kubernetes.io/cluster/eks-backend'].Value, 'owned')].GroupId" --output text 2>/dev/null); do
+            sg_name=$(aws ec2 describe-security-groups --group-ids "$sg_id" --region us-east-1 --query "SecurityGroups[0].GroupName" --output text 2>/dev/null)
+            echo "  Deleting orphaned security group: $sg_name ($sg_id)"
+
+            # Check if any ENIs are using this security group
+            enis=$(aws ec2 describe-network-interfaces --filters "Name=group-id,Values=$sg_id" --region us-east-1 --query "NetworkInterfaces[].NetworkInterfaceId" --output text 2>/dev/null)
+            if [ ! -z "$enis" ]; then
+                echo "    Found ENIs using this security group, attempting cleanup..."
+                for eni in $enis; do
+                    echo "    Deleting ENI: $eni"
+                    aws ec2 delete-network-interface --network-interface-id "$eni" --region us-east-1 2>/dev/null || true
+                done
+                sleep 5
+            fi
+
+            # First, remove all ingress and egress rules to avoid dependency issues
+            aws ec2 revoke-security-group-ingress --group-id "$sg_id" --region us-east-1 --source-group "$sg_id" --protocol all 2>/dev/null || true
+            aws ec2 revoke-security-group-egress --group-id "$sg_id" --region us-east-1 --source-group "$sg_id" --protocol all 2>/dev/null || true
+
+            # Then delete the security group
+            aws ec2 delete-security-group --group-id "$sg_id" --region us-east-1 || true
+        done
     done
-    
+
     echo -e "${GREEN}Kubernetes resources destroyed${NC}"
 }
 
 # Clean up network dependencies
 cleanup_network_dependencies() {
     echo -e "${YELLOW}Cleaning up network dependencies...${NC}"
-    
+
     # Clean up Elastic IPs
     echo "Checking for unassociated Elastic IPs..."
     for eip in $(aws ec2 describe-addresses --region us-east-1 --query "Addresses[?AssociationId==null].AllocationId" --output text 2>/dev/null); do
         echo "Releasing Elastic IP: $eip"
         aws ec2 release-address --allocation-id "$eip" --region us-east-1 || true
     done
-    
+
     # Clean up orphaned Network Interfaces
     echo "Checking for orphaned network interfaces..."
     for vpc_id in $(aws ec2 describe-vpcs --filters "Name=tag:Project,Values=RapydSentinel" --region us-east-1 --query "Vpcs[].VpcId" --output text 2>/dev/null); do
@@ -152,9 +173,9 @@ cleanup_network_dependencies() {
             echo "Deleting orphaned ENI: $eni"
             aws ec2 delete-network-interface --network-interface-id "$eni" --region us-east-1 || true
         done
-        
-        # Force detach and delete ENIs that are still attached
-        for eni in $(aws ec2 describe-network-interfaces --filters "Name=vpc-id,Values=$vpc_id" --region us-east-1 --query "NetworkInterfaces[?contains(Description, 'ELB')].NetworkInterfaceId" --output text 2>/dev/null); do
+
+        # Force detach and delete ENIs that are still attached (including Lambda ENIs)
+        for eni in $(aws ec2 describe-network-interfaces --filters "Name=vpc-id,Values=$vpc_id" --region us-east-1 --query "NetworkInterfaces[?contains(Description, 'ELB') || contains(Description, 'AWS Lambda')].NetworkInterfaceId" --output text 2>/dev/null); do
             attachment=$(aws ec2 describe-network-interfaces --network-interface-ids "$eni" --region us-east-1 --query "NetworkInterfaces[0].Attachment.AttachmentId" --output text 2>/dev/null || echo "")
             if [ ! -z "$attachment" ] && [ "$attachment" != "None" ]; then
                 echo "Force detaching ENI: $eni"
@@ -165,31 +186,164 @@ cleanup_network_dependencies() {
             aws ec2 delete-network-interface --network-interface-id "$eni" --region us-east-1 || true
         done
     done
-    
+
     # Wait for network interfaces to be released
     sleep 20
+}
+
+# Clean up VPC blockers (k8s security groups that might persist)
+cleanup_vpc_blockers() {
+    echo -e "${YELLOW}Cleaning up VPC blockers...${NC}"
+
+    # Find all our VPCs
+    for vpc_id in $(aws ec2 describe-vpcs --filters "Name=tag:Project,Values=RapydSentinel" --region us-east-1 --query "Vpcs[].VpcId" --output text 2>/dev/null); do
+        echo "Checking VPC: $vpc_id for lingering resources"
+
+        # Clean up any remaining k8s-elb security groups (these often block VPC deletion)
+        for sg_id in $(aws ec2 describe-security-groups --filters "Name=vpc-id,Values=$vpc_id" --region us-east-1 --query "SecurityGroups[?GroupName != 'default'].GroupId" --output text 2>/dev/null); do
+            sg_name=$(aws ec2 describe-security-groups --group-ids "$sg_id" --region us-east-1 --query "SecurityGroups[0].GroupName" --output text 2>/dev/null)
+            if [[ "$sg_name" == *"k8s-elb"* ]] || [[ "$sg_name" == *"eks-"* ]]; then
+                echo "  Found lingering security group: $sg_name ($sg_id)"
+
+                # Check for ENIs
+                enis=$(aws ec2 describe-network-interfaces --filters "Name=group-id,Values=$sg_id" --region us-east-1 --query "NetworkInterfaces[].NetworkInterfaceId" --output text 2>/dev/null)
+                if [ ! -z "$enis" ]; then
+                    echo "    Cleaning up ENIs first..."
+                    for eni in $enis; do
+                        aws ec2 delete-network-interface --network-interface-id "$eni" --region us-east-1 2>/dev/null || true
+                    done
+                    sleep 5
+                fi
+
+                echo "    Deleting security group: $sg_id"
+                aws ec2 delete-security-group --group-id "$sg_id" --region us-east-1 2>/dev/null || true
+            fi
+        done
+    done
+}
+
+# Clean up Lambda ENIs specifically
+cleanup_lambda_enis() {
+    echo -e "${YELLOW}Checking for Lambda ENIs that might be blocking security group deletion...${NC}"
+
+    # Find Lambda security group
+    lambda_sg=$(aws ec2 describe-security-groups --filters "Name=group-name,Values=lambda-deployer-sg" --region us-east-1 --query "SecurityGroups[0].GroupId" --output text 2>/dev/null || echo "")
+
+    if [ ! -z "$lambda_sg" ] && [ "$lambda_sg" != "None" ]; then
+        echo "Found Lambda security group: $lambda_sg"
+
+        # Find all ENIs using this security group
+        LAMBDA_ENIS=$(aws ec2 describe-network-interfaces --filters "Name=group-id,Values=$lambda_sg" --region us-east-1 --query "NetworkInterfaces[].NetworkInterfaceId" --output text 2>/dev/null)
+
+        if [ ! -z "$LAMBDA_ENIS" ]; then
+            # Check if these are ela-attach ENIs (managed by Lambda)
+            ELA_COUNT=0
+            for eni in $LAMBDA_ENIS; do
+                attachment=$(aws ec2 describe-network-interfaces --network-interface-ids "$eni" --region us-east-1 --query "NetworkInterfaces[0].Attachment.AttachmentId" --output text 2>/dev/null || echo "")
+
+                if [[ "$attachment" == ela-attach-* ]]; then
+                    echo "Found Lambda-managed ENI: $eni (attachment: $attachment)"
+                    echo "  ⚠️  This ENI is managed by AWS Lambda and cannot be manually detached"
+                    ((ELA_COUNT++))
+                else
+                    echo "Found Lambda ENI: $eni"
+                    if [ ! -z "$attachment" ] && [ "$attachment" != "None" ]; then
+                        echo "Attempting to detach: $eni (attachment: $attachment)"
+                        aws ec2 detach-network-interface --attachment-id "$attachment" --force --region us-east-1 2>/dev/null || true
+                        sleep 5
+                    fi
+                    echo "Attempting to delete ENI: $eni"
+                    aws ec2 delete-network-interface --network-interface-id "$eni" --region us-east-1 2>/dev/null || true
+                fi
+            done
+
+            if [ $ELA_COUNT -gt 0 ]; then
+                echo ""
+                echo -e "${YELLOW}⚠️  WARNING: Found $ELA_COUNT Lambda-managed ENI(s) that cannot be manually deleted${NC}"
+                echo -e "${YELLOW}These ENIs will be automatically cleaned up by AWS in 15-20 minutes${NC}"
+                echo ""
+                echo "Options:"
+                echo "  1. Wait for automatic cleanup (recommended)"
+                echo "  2. Continue with terraform destroy (will likely fail)"
+                echo "  3. Cancel and try again later"
+                echo ""
+                read -p "Choose option (1/2/3): " choice
+
+                case $choice in
+                    1)
+                        echo "Waiting for Lambda ENIs to be released by AWS..."
+                        echo "This can take up to 20 minutes. Checking every 30 seconds..."
+
+                        MAX_ATTEMPTS=40  # 20 minutes with 30 second intervals
+                        ATTEMPT=0
+
+                        while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
+                            REMAINING_ENIS=$(aws ec2 describe-network-interfaces --filters "Name=group-id,Values=$lambda_sg" --region us-east-1 --query "NetworkInterfaces[].NetworkInterfaceId" --output text 2>/dev/null | wc -w)
+
+                            if [ "$REMAINING_ENIS" -eq "0" ]; then
+                                echo -e "${GREEN}All Lambda ENIs have been released!${NC}"
+                                break
+                            fi
+
+                            ((ATTEMPT++))
+                            echo "  Attempt $ATTEMPT/$MAX_ATTEMPTS: $REMAINING_ENIS ENI(s) still attached..."
+                            sleep 30
+                        done
+
+                        if [ $ATTEMPT -eq $MAX_ATTEMPTS ]; then
+                            echo -e "${RED}Timeout waiting for Lambda ENIs to be released${NC}"
+                            echo "You may need to wait longer and run destroy again"
+                        fi
+                        ;;
+                    2)
+                        echo "Continuing with terraform destroy (may fail due to ENIs)..."
+                        ;;
+                    3)
+                        echo "Cancelling destroy operation"
+                        exit 0
+                        ;;
+                    *)
+                        echo "Invalid option. Cancelling destroy operation"
+                        exit 0
+                        ;;
+                esac
+            fi
+        else
+            echo "No Lambda ENIs found"
+        fi
+    fi
 }
 
 # Destroy Terraform infrastructure
 destroy_terraform() {
     echo -e "${YELLOW}Destroying Terraform infrastructure...${NC}"
     cd "$PROJECT_ROOT/terraform/environments/production"
-    
+
     # Initialize terraform with backend config
     terraform init -reconfigure
-    
+
     # First attempt
     terraform destroy -auto-approve || {
         echo -e "${YELLOW}First destroy attempt failed, cleaning up dependencies...${NC}"
-        
+
+        # Clean up Lambda ENIs specifically
+        cleanup_lambda_enis
+
+        # Clean up VPC blockers (k8s security groups)
+        cleanup_vpc_blockers
+
         # Clean up network dependencies that might be blocking
         cleanup_network_dependencies
-        
+
         # Second attempt
         echo -e "${YELLOW}Retrying terraform destroy...${NC}"
         terraform destroy -auto-approve || {
             echo -e "${RED}Some resources may require manual cleanup${NC}"
             echo "Check AWS Console for remaining resources"
+
+            # Final attempt to clean VPC blockers
+            echo -e "${YELLOW}Final cleanup attempt for VPC blockers...${NC}"
+            cleanup_vpc_blockers
         }
     }
     

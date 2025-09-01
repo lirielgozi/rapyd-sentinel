@@ -42,7 +42,7 @@ Internet
 
 ### 1. Clone the Repository
 ```bash
-git clone https://github.com/your-org/rapyd-sentinel.git
+git clone https://github.com/lirielgozi/rapyd-sentinel
 cd rapyd-sentinel
 ```
 

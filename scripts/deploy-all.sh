@@ -159,39 +159,90 @@ verify_deployment() {
     LAMBDA_NAME="rapyd-sentinel-eks-deployer"
     
     # Get status from Lambda
+    echo "Getting deployment status..."
     aws lambda invoke \
         --function-name $LAMBDA_NAME \
         --payload $(echo '{"action": "status", "target": "both"}' | base64) \
         --region us-east-1 \
         /tmp/status-result.json \
-        --cli-read-timeout 60
-    
-    echo "Deployment Status:"
-    cat /tmp/status-result.json | jq -r '.body' 2>/dev/null || cat /tmp/status-result.json
-    
-    # Extract Gateway URL
-    GATEWAY_URL=$(cat /tmp/status-result.json | grep -oP 'Gateway URL: \K[^\s]+' | head -1)
-    
-    if [ -n "$GATEWAY_URL" ]; then
-        echo ""
-        echo -e "${GREEN}Testing Gateway URL: $GATEWAY_URL${NC}"
-        
-        # Wait a bit for services to stabilize
-        sleep 10
-        
-        # Test the gateway
-        response=$(curl -s -m 10 "$GATEWAY_URL" 2>/dev/null || echo "Connection failed")
-        echo "Response: $response"
-        
-        if [[ "$response" == *"Hello from backend"* ]]; then
-            echo -e "${GREEN}✅ End-to-end connectivity verified!${NC}"
-            echo -e "${GREEN}Gateway is successfully proxying to backend service${NC}"
-        else
-            echo -e "${YELLOW}⚠️  Gateway is running but backend proxy may not be ready yet${NC}"
-        fi
+        --cli-read-timeout 60 > /dev/null 2>&1
+
+    # Parse the response
+    STATUS_BODY=$(cat /tmp/status-result.json | jq -r '.body' 2>/dev/null)
+
+    # Check if both clusters have running pods
+    echo ""
+    echo "Checking cluster health:"
+
+    # Check Gateway cluster
+    if echo "$STATUS_BODY" | grep -q "Gateway cluster pods:.*nginx-proxy"; then
+        echo -e "  ${GREEN}✓ Gateway cluster: nginx-proxy is running${NC}"
+        GATEWAY_OK=true
     else
-        echo -e "${YELLOW}Could not extract Gateway URL from status${NC}"
+        echo -e "  ${RED}✗ Gateway cluster: nginx-proxy not found${NC}"
+        GATEWAY_OK=false
     fi
+
+    # Check Backend cluster
+    if echo "$STATUS_BODY" | grep -q "Backend cluster pods:.*backend-service"; then
+        echo -e "  ${GREEN}✓ Backend cluster: backend-service is running${NC}"
+        BACKEND_OK=true
+    else
+        echo -e "  ${RED}✗ Backend cluster: backend-service not found${NC}"
+        BACKEND_OK=false
+    fi
+
+    # Extract Gateway LoadBalancer URL
+    GATEWAY_URL=$(echo "$STATUS_BODY" | grep -oP '(?<=Gateway URL: )[^\s]+' | head -1)
+
+    if [ -z "$GATEWAY_URL" ]; then
+        # Try to get it directly from terraform outputs
+        echo "Getting Gateway URL from Terraform outputs..."
+        cd "$PROJECT_ROOT/terraform/environments/production"
+        GATEWAY_LB=$(terraform output -raw gateway_load_balancer_dns 2>/dev/null || echo "")
+        cd "$PROJECT_ROOT"
+        if [ -n "$GATEWAY_LB" ]; then
+            GATEWAY_URL="http://$GATEWAY_LB"
+        fi
+    fi
+
+    echo ""
+    if [ -n "$GATEWAY_URL" ]; then
+        echo -e "${GREEN}========================================${NC}"
+        echo -e "${GREEN}Gateway URL: $GATEWAY_URL${NC}"
+        echo -e "${GREEN}========================================${NC}"
+
+        # Wait for services to be ready
+        echo ""
+        echo "Waiting for services to be fully ready..."
+        sleep 15
+
+        # Test the gateway endpoint
+        echo "Testing end-to-end connectivity..."
+        for i in {1..5}; do
+            response=$(curl -s -m 10 "$GATEWAY_URL" 2>/dev/null || echo "")
+
+            if [[ "$response" == *"Hello from backend pod:"* ]]; then
+                echo -e "${GREEN}✅ SUCCESS: End-to-end connectivity verified!${NC}"
+                echo "Response from backend: $response"
+                return 0
+            else
+                echo "  Attempt $i/5: Waiting for services to connect..."
+                sleep 5
+            fi
+        done
+
+        echo -e "${YELLOW}⚠️  Services are deployed but may need more time to stabilize${NC}"
+        echo "Test the URL manually in a few moments: $GATEWAY_URL"
+    else
+        echo -e "${RED}Could not determine Gateway URL${NC}"
+        echo "Check deployment status manually with:"
+        echo "  kubectl get svc -n default --context arn:aws:eks:us-east-1:\$(aws sts get-caller-identity --query Account --output text):cluster/eks-gateway"
+        return 1
+    fi
+
+    # Save the URL for easy access
+    echo "$GATEWAY_URL" > "$PROJECT_ROOT/.gateway_url"
 }
 
 # Function to display access information
@@ -201,17 +252,36 @@ display_access_info() {
     echo -e "${GREEN}Deployment Complete!${NC}"
     echo "====================================="
     echo ""
-    echo "To check status anytime:"
+
+    # Display the Gateway URL prominently if available
+    if [ -f "$PROJECT_ROOT/.gateway_url" ]; then
+        GATEWAY_URL=$(cat "$PROJECT_ROOT/.gateway_url")
+        echo -e "${GREEN}🌐 Access your application at:${NC}"
+        echo -e "${GREEN}   $GATEWAY_URL${NC}"
+        echo ""
+    fi
+
+    echo "Useful Commands:"
+    echo "----------------"
+    echo ""
+    echo "Check deployment status:"
     echo "  aws lambda invoke --function-name rapyd-sentinel-eks-deployer \\"
     echo "    --payload \$(echo '{\"action\": \"status\", \"target\": \"both\"}' | base64) \\"
     echo "    /tmp/status.json --region us-east-1"
+    echo "  cat /tmp/status.json | jq -r '.body'"
     echo ""
-    echo "To redeploy services:"
+    echo "Redeploy services:"
     echo "  aws lambda invoke --function-name rapyd-sentinel-eks-deployer \\"
     echo "    --payload \$(echo '{\"action\": \"deploy\", \"target\": \"both\"}' | base64) \\"
     echo "    /tmp/deploy.json --region us-east-1"
     echo ""
-    echo "To destroy everything:"
+    echo "Access Gateway cluster directly:"
+    echo "  kubectl get all -n default --context arn:aws:eks:us-east-1:\$(aws sts get-caller-identity --query Account --output text):cluster/eks-gateway"
+    echo ""
+    echo "View Lambda logs:"
+    echo "  aws logs tail /aws/lambda/rapyd-sentinel-eks-deployer --follow"
+    echo ""
+    echo "Destroy everything:"
     echo "  $SCRIPT_DIR/destroy.sh"
 }
 

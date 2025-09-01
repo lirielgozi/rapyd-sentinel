@@ -152,3 +152,9 @@ variable "lambda_deployer_role_arn" {
   type        = string
   default     = ""
 }
+
+variable "enable_lambda_access" {
+  description = "Enable Lambda deployer access to the cluster"
+  type        = bool
+  default     = false
+}

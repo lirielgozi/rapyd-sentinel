@@ -37,6 +37,7 @@ module "eks_gateway" {
   additional_iam_roles = []
   
   # Lambda role configured via EKS Access Entries
+  enable_lambda_access = true
   lambda_deployer_role_arn = aws_iam_role.lambda_deployer.arn
   
   environment = var.environment

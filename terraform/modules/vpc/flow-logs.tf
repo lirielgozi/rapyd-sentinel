@@ -24,6 +24,11 @@ resource "aws_cloudwatch_log_group" "flow_log" {
   retention_in_days = var.flow_logs_retention_days
 
   tags = local.common_tags
+
+  # Handle existing log groups
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 # IAM Role for Flow Logs

@@ -13,9 +13,9 @@ terraform {
   }
 
   backend "s3" {
-    bucket = "992553183326-tf-state"
+    bucket = "721500739616-tf-state"
     key    = "sentinel/sentinel-prod.tfstate"
-    region = "us-east-1"
+    region = "us-west-2"
     
     # Enable encryption
     encrypt = true

@@ -3,12 +3,12 @@
 
 # Access entry for Lambda deployer role
 resource "aws_eks_access_entry" "lambda_deployer" {
-  count = var.lambda_deployer_role_arn != "" ? 1 : 0
-  
+  count = var.enable_lambda_access ? 1 : 0
+
   cluster_name  = aws_eks_cluster.main.name
   principal_arn = var.lambda_deployer_role_arn
   type         = "STANDARD"
-  
+
   tags = merge(
     local.common_tags,
     {
@@ -19,8 +19,8 @@ resource "aws_eks_access_entry" "lambda_deployer" {
 
 # Grant cluster admin permissions to Lambda deployer
 resource "aws_eks_access_policy_association" "lambda_deployer_admin" {
-  count = var.lambda_deployer_role_arn != "" ? 1 : 0
-  
+  count = var.enable_lambda_access ? 1 : 0
+
   cluster_name  = aws_eks_cluster.main.name
   principal_arn = var.lambda_deployer_role_arn
   policy_arn   = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
