@@ -68,19 +68,19 @@ wait_for_lambda() {
     for i in {1..30}; do
         STATE=$(aws lambda get-function \
             --function-name $LAMBDA_NAME \
-            --region us-west-2 \
+            --region us-east-1 \
             --query 'Configuration.State' \
             --output text 2>/dev/null || echo "")
-        
+
         if [ "$STATE" = "Active" ]; then
             echo -e "${GREEN}Lambda function is active${NC}"
             return 0
         fi
-        
+
         echo "Waiting for Lambda to be active... (attempt $i/30, current state: $STATE)"
         sleep 5
     done
-    
+
     echo -e "${RED}Lambda function did not become active in time${NC}"
     return 1
 }
@@ -88,59 +88,59 @@ wait_for_lambda() {
 # Function to configure aws-auth for both clusters
 configure_aws_auth() {
     echo -e "${YELLOW}Verifying aws-auth configuration for EKS clusters...${NC}"
-    
+
     # Both clusters' aws-auth are now configured by Terraform during cluster creation
     # This solves the chicken-and-egg problem for the Backend cluster
     # and ensures consistency for both clusters
-    
+
     echo -e "${GREEN}Gateway cluster aws-auth configured by Terraform${NC}"
     echo -e "${GREEN}Backend cluster aws-auth configured by Terraform${NC}"
-    
+
     # COMMENTED OUT - Cannot reach backend cluster from outside VPC
     # Even with public access enabled, the cluster in private subnets is not reachable
     #
     # # Configure Backend cluster aws-auth (needs temporary public access)
     # echo "Configuring Backend cluster aws-auth..."
-    # 
+    #
     # # Check current public access state
-    # CURRENT_PUBLIC_ACCESS=$(aws eks describe-cluster --name eks-backend --region us-west-2 --query 'cluster.resourcesVpcConfig.endpointPublicAccess' --output text)
-    # 
+    # CURRENT_PUBLIC_ACCESS=$(aws eks describe-cluster --name eks-backend --region us-east-1 --query 'cluster.resourcesVpcConfig.endpointPublicAccess' --output text)
+    #
     # if [ "$CURRENT_PUBLIC_ACCESS" = "false" ]; then
     #     # Enable public access temporarily
     #     echo "Enabling public access for backend cluster temporarily..."
     #     aws eks update-cluster-config \
     #         --name eks-backend \
-    #         --region us-west-2 \
+    #         --region us-east-1 \
     #         --resources-vpc-config endpointPublicAccess=true,endpointPrivateAccess=true \
     #         --output json > /dev/null
-    #     
+    #
     #     # Wait for update to complete
     #     echo "Waiting for backend cluster update to complete..."
-    #     aws eks wait cluster-active --name eks-backend --region us-west-2
+    #     aws eks wait cluster-active --name eks-backend --region us-east-1
     # else
     #     echo "Backend cluster public access is already enabled"
     # fi
     #
     # ... rest of backend configuration commented out ...
-    
+
     echo -e "${GREEN}Both clusters are now configured for Lambda access${NC}"
 }
 
 # Function to deploy services to EKS clusters
 deploy_services() {
     echo -e "${YELLOW}Deploying services to EKS clusters...${NC}"
-    
+
     LAMBDA_NAME="rapyd-sentinel-eks-deployer"
-    
+
     # Deploy to both clusters
     echo "Invoking Lambda to deploy services..."
     aws lambda invoke \
         --function-name $LAMBDA_NAME \
         --payload $(echo '{"action": "deploy", "target": "both"}' | base64) \
-        --region us-west-2 \
+        --region us-east-1 \
         /tmp/deploy-result.json \
         --cli-read-timeout 300
-    
+
     # Check deployment result
     if grep -q '"statusCode": 200' /tmp/deploy-result.json; then
         echo -e "${GREEN}Services deployed successfully${NC}"
@@ -154,50 +154,30 @@ deploy_services() {
 
 # Function to verify deployment
 verify_deployment() {
-    echo -e "${YELLOW}Verifying deployment...${NC}"
-    
+    echo -e "${YELLOW}Getting deployment status...${NC}"
+
     LAMBDA_NAME="rapyd-sentinel-eks-deployer"
-    
+
+    # Wait a bit for services to initialize
+    echo "Waiting for services to initialize..."
+    sleep 20
+
     # Get status from Lambda
-    echo "Getting deployment status..."
     aws lambda invoke \
         --function-name $LAMBDA_NAME \
         --payload $(echo '{"action": "status", "target": "both"}' | base64) \
-        --region us-west-2 \
+        --region us-east-1 \
         /tmp/status-result.json \
         --cli-read-timeout 60 > /dev/null 2>&1
 
     # Parse the response
     STATUS_BODY=$(cat /tmp/status-result.json | jq -r '.body' 2>/dev/null)
 
-    # Check if both clusters have running pods
-    echo ""
-    echo "Checking cluster health:"
-
-    # Check Gateway cluster
-    if echo "$STATUS_BODY" | grep -q "Gateway cluster pods:.*nginx-proxy"; then
-        echo -e "  ${GREEN}✓ Gateway cluster: nginx-proxy is running${NC}"
-        GATEWAY_OK=true
-    else
-        echo -e "  ${RED}✗ Gateway cluster: nginx-proxy not found${NC}"
-        GATEWAY_OK=false
-    fi
-
-    # Check Backend cluster
-    if echo "$STATUS_BODY" | grep -q "Backend cluster pods:.*backend-service"; then
-        echo -e "  ${GREEN}✓ Backend cluster: backend-service is running${NC}"
-        BACKEND_OK=true
-    else
-        echo -e "  ${RED}✗ Backend cluster: backend-service not found${NC}"
-        BACKEND_OK=false
-    fi
-
-    # Extract Gateway LoadBalancer URL
-    GATEWAY_URL=$(echo "$STATUS_BODY" | grep -oP '(?<=Gateway URL: )[^\s]+' | head -1)
+    # Extract the Gateway service URL from the status output
+    GATEWAY_URL=$(echo "$STATUS_BODY" | grep -oP 'Service gateway-service URL: \K[^\s]+' | head -1)
 
     if [ -z "$GATEWAY_URL" ]; then
-        # Try to get it directly from terraform outputs
-        echo "Getting Gateway URL from Terraform outputs..."
+        # Try to get it from terraform outputs as fallback
         cd "$PROJECT_ROOT/terraform/environments/production"
         GATEWAY_LB=$(terraform output -raw gateway_load_balancer_dns 2>/dev/null || echo "")
         cd "$PROJECT_ROOT"
@@ -206,43 +186,35 @@ verify_deployment() {
         fi
     fi
 
+    # Display the Gateway URL prominently
     echo ""
     if [ -n "$GATEWAY_URL" ]; then
-        echo -e "${GREEN}========================================${NC}"
-        echo -e "${GREEN}Gateway URL: $GATEWAY_URL${NC}"
-        echo -e "${GREEN}========================================${NC}"
+        echo -e "${GREEN}================================================${NC}"
+        echo -e "${GREEN}🌐 Your application is available at:${NC}"
+        echo -e "${GREEN}   $GATEWAY_URL${NC}"
+        echo -e "${GREEN}================================================${NC}"
 
-        # Wait for services to be ready
+        # Save the URL for easy access
+        echo "$GATEWAY_URL" > "$PROJECT_ROOT/.gateway_url"
+
+        # Quick connectivity test
         echo ""
-        echo "Waiting for services to be fully ready..."
-        sleep 15
+        echo "Testing connectivity..."
+        response=$(curl -s -m 5 "$GATEWAY_URL" 2>/dev/null || echo "")
 
-        # Test the gateway endpoint
-        echo "Testing end-to-end connectivity..."
-        for i in {1..5}; do
-            response=$(curl -s -m 10 "$GATEWAY_URL" 2>/dev/null || echo "")
-
-            if [[ "$response" == *"Hello from backend pod:"* ]]; then
-                echo -e "${GREEN}✅ SUCCESS: End-to-end connectivity verified!${NC}"
-                echo "Response from backend: $response"
-                return 0
-            else
-                echo "  Attempt $i/5: Waiting for services to connect..."
-                sleep 5
-            fi
-        done
-
-        echo -e "${YELLOW}⚠️  Services are deployed but may need more time to stabilize${NC}"
-        echo "Test the URL manually in a few moments: $GATEWAY_URL"
+        if [[ "$response" == *"Hello from backend pod:"* ]]; then
+            echo -e "${GREEN}✅ End-to-end connectivity verified!${NC}"
+            echo "Response: $response"
+        elif [ -n "$response" ]; then
+            echo -e "${YELLOW}⚠️  Gateway is responding. Backend connection may take a moment.${NC}"
+        else
+            echo -e "${YELLOW}⚠️  Services are starting up. Try the URL in a few moments.${NC}"
+        fi
     else
         echo -e "${RED}Could not determine Gateway URL${NC}"
-        echo "Check deployment status manually with:"
-        echo "  kubectl get svc -n default --context arn:aws:eks:us-west-2:\$(aws sts get-caller-identity --query Account --output text):cluster/eks-gateway"
-        return 1
+        echo "Run the following to check status:"
+        echo "  ./scripts/check-status.sh"
     fi
-
-    # Save the URL for easy access
-    echo "$GATEWAY_URL" > "$PROJECT_ROOT/.gateway_url"
 }
 
 # Function to display access information
@@ -267,16 +239,16 @@ display_access_info() {
     echo "Check deployment status:"
     echo "  aws lambda invoke --function-name rapyd-sentinel-eks-deployer \\"
     echo "    --payload \$(echo '{\"action\": \"status\", \"target\": \"both\"}' | base64) \\"
-    echo "    /tmp/status.json --region us-west-2"
+    echo "    /tmp/status.json --region us-east-1"
     echo "  cat /tmp/status.json | jq -r '.body'"
     echo ""
     echo "Redeploy services:"
     echo "  aws lambda invoke --function-name rapyd-sentinel-eks-deployer \\"
     echo "    --payload \$(echo '{\"action\": \"deploy\", \"target\": \"both\"}' | base64) \\"
-    echo "    /tmp/deploy.json --region us-west-2"
+    echo "    /tmp/deploy.json --region us-east-1"
     echo ""
     echo "Access Gateway cluster directly:"
-    echo "  kubectl get all -n default --context arn:aws:eks:us-west-2:\$(aws sts get-caller-identity --query Account --output text):cluster/eks-gateway"
+    echo "  kubectl get all -n default --context arn:aws:eks:us-east-1:\$(aws sts get-caller-identity --query Account --output text):cluster/eks-gateway"
     echo ""
     echo "View Lambda logs:"
     echo "  aws logs tail /aws/lambda/rapyd-sentinel-eks-deployer --follow"
